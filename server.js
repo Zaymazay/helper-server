@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
 
 const app = express();
@@ -14,36 +15,62 @@ methods: ["GET", "POST"]
 }
 });
 
-let helperSocketId = null;
+const PORT = process.env.PORT || 3000;
+const rooms = {};
 
 io.on('connection', (socket) => {
-console.log('Connected:', socket.id);
+console.log('User connected:', socket.id);
 
-socket.on('register-helper', () => {
-helperSocketId = socket.id;
-console.log('Helper registered:', socket.id);
+// 🔥 СЛЕПОЙ НАЖАЛ КНОПКУ "ПОМОЩЬ"
+socket.on('call-request', () => {
+const roomId = Date.now().toString();
+rooms[roomId] = {
+blind: socket.id,
+helper: null
+};
+
+socket.join(roomId);
+socket.emit('room-created', { roomId });
+
+// 🔥 ОТПРАВЛЯЕМ ВСЕМ ПОМОЩНИКАМ
+socket.broadcast.emit('new-call', { roomId });
+console.log('📞 Call request received, room:', roomId);
 });
 
-socket.on('call-request', () => {
-console.log('Call request received');
-if (helperSocketId) {
-io.to(helperSocketId).emit('call-request');
+// Помощник принял вызов
+socket.on('call-accepted', (data) => {
+const room = rooms[data.roomId];
+if (room) {
+room.helper = socket.id;
+socket.join(data.roomId);
+
+// Сообщаем слепому
+io.to(room.blind).emit('call-accepted');
+console.log('✅ Call accepted in room:', data.roomId);
 }
 });
 
-socket.on('webrtc-offer', (data) => io.emit('webrtc-offer', data));
-socket.on('webrtc-answer', (data) => io.emit('webrtc-answer', data));
-socket.on('ice-candidate', (data) => io.emit('ice-candidate', data));
-socket.on('call-end', () => io.emit('call-ended'));
+// WebRTC Offer
+socket.on('webrtc-offer', (data) => {
+socket.to(data.roomId).emit('webrtc-offer', data.offer);
 });
 
-app.post('/trigger-call', (req, res) => {
-console.log('Trigger call from external');
-io.emit('call-request');
-res.json({ status: 'ok' });
+// WebRTC Answer
+socket.on('webrtc-answer', (data) => {
+socket.to(data.roomId).emit('webrtc-answer', data.answer);
 });
 
-const PORT = process.env.PORT || 3000;
+// ICE Candidate
+socket.on('ice-candidate', (data) => {
+socket.to(data.roomId).emit('ice-candidate', data.candidate);
+});
+
+// Отключение
+socket.on('disconnect', () => {
+console.log('User disconnected:', socket.id);
+});
+});
+
 server.listen(PORT, () => {
-console.log(`Server is running on port ${PORT}`);
+console.log('Server running on port', PORT);
 });
