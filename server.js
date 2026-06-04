@@ -1,19 +1,13 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, {
-cors: {
-origin: "*",
-methods: ["GET", "POST"]
-}
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
 const PORT = process.env.PORT || 3000;
 const rooms = {};
@@ -21,56 +15,52 @@ const rooms = {};
 io.on('connection', (socket) => {
 console.log('User connected:', socket.id);
 
-// 🔥 СЛЕПОЙ НАЖАЛ КНОПКУ "ПОМОЩЬ"
-socket.on('call-request', () => {
+// Слепой создал звонок и отправил Offer
+socket.on('call-request', (data) => {
 const roomId = Date.now().toString();
-rooms[roomId] = {
-blind: socket.id,
-helper: null
-};
+rooms[roomId] = { blind: socket.id, helper: null, offer: data.offer };
 
 socket.join(roomId);
 socket.emit('room-created', { roomId });
 
-// 🔥 ОТПРАВЛЯЕМ ВСЕМ ПОМОЩНИКАМ
-socket.broadcast.emit('new-call', { roomId });
-console.log('📞 Call request received, room:', roomId);
+// 🔥 ВАЖНО: Отправляем помощникам roomId И Offer
+socket.broadcast.emit('new-call', { roomId, offer: data.offer });
+
+console.log('Call request received:', roomId);
 });
 
-// Помощник принял вызов
-socket.on('call-accepted', (data) => {
+// Помощник ответил (создал Answer)
+socket.on('webrtc-answer', (data) => {
 const room = rooms[data.roomId];
 if (room) {
 room.helper = socket.id;
 socket.join(data.roomId);
-
-// Сообщаем слепому
-io.to(room.blind).emit('call-accepted');
-console.log('✅ Call accepted in room:', data.roomId);
+io.to(room.blind).emit('webrtc-answer', data.answer);
+console.log('Answer sent to blind user');
 }
 });
 
-// WebRTC Offer
-socket.on('webrtc-offer', (data) => {
-socket.to(data.roomId).emit('webrtc-offer', data.offer);
-});
-
-// WebRTC Answer
-socket.on('webrtc-answer', (data) => {
-socket.to(data.roomId).emit('webrtc-answer', data.answer);
-});
-
-// ICE Candidate
+// Обмен ICE кандидатами
 socket.on('ice-candidate', (data) => {
-socket.to(data.roomId).emit('ice-candidate', data.candidate);
+const room = rooms[data.roomId];
+if (room) {
+const targetId = room.blind === socket.id ? room.helper : room.blind;
+if (targetId) io.to(targetId).emit('ice-candidate', data.candidate);
+}
 });
 
-// Отключение
+socket.on('call-end', (data) => {
+const room = rooms[data.roomId];
+if (room) {
+const targetId = room.blind === socket.id ? room.helper : room.blind;
+if (targetId) io.to(targetId).emit('call-ended');
+delete rooms[data.roomId];
+}
+});
+
 socket.on('disconnect', () => {
-console.log('User disconnected:', socket.id);
+console.log('User disconnected');
 });
 });
 
-server.listen(PORT, () => {
-console.log('Server running on port', PORT);
-});
+server.listen(PORT, () => console.log('Server running on port', PORT));
